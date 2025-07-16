@@ -7,7 +7,7 @@ var sptr = document.createElement("script");
 sptr.src = "https://cdn.jsdelivr.net/gh/spart-digital/scripts@main/spart_mkt_tracker.js";
 sptr.onload = function() {
     // alterar domínio e measurement id do GA
-    mymetric_tracker('site.com.br', 'G-XXXXXXXX');
+    spart_mkt_tracker('site.com.br', 'G-XXXXXXXX');
 };
 document.head.appendChild(sptr);
   
