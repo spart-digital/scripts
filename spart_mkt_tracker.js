@@ -103,6 +103,7 @@ function spart_mkt_tracker(domain, measurementId, useJQuery = false) {
                 fbc: getCookie("_fbc"),
                 gclid: getCookie("_gcl_aw"),
                 ttclid: getCookie("_ttclid"),
+                ttp: getCookie("_ttp"),
                 hubspotutk: getCookie("hubspotutk"),
                 ua: btoa(navigator.userAgent)
             };
