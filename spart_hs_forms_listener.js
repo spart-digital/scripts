@@ -1,10 +1,12 @@
-// SPART HubSpot Forms Listener - v1.2
+// SPART HubSpot Forms Listener - v1.4
 //
 // Módulo 1: preenchimento do campo oculto "marketing_tracker_cookies"
 // com o conteúdo do cookie spart_mkt_tracker.
-// Módulo 2: captura da conversão e push no dataLayer (evento hubspot_form_submit).
+// Módulo 2: captura da conversão e push no dataLayer (evento hubspot_form_submit),
+//           com dados do usuário em texto, com hash SHA-256 e IDs de rastreamento.
 // Módulo 3: identificação do usuário para Meta e Google (dados com hash SHA-256
-//           guardados no cookie spart_ud e aplicados nas próximas páginas).
+//           guardados no cookie spart_ud e aplicados nas próximas páginas;
+//           no Meta, também aplicados no Pixel já carregado antes do Lead).
 //
 // Cobre:
 //  - Forms do editor novo (v4), inclusive dentro do iframe cross-origin do
@@ -17,7 +19,7 @@
     if (window.__spartHsFormsListener) return;
     window.__spartHsFormsListener = true;
 
-    var VERSION = '1.2';
+    var VERSION = '1.4';
 
     var CONFIG = {
         trackerCookie: 'spart_mkt_tracker',
@@ -249,6 +251,40 @@
         }
     }
 
+    // IDs de rastreamento: o JSON enviado no campo oculto (exatamente o que o
+    // HubSpot/n8n recebeu) tem prioridade; o que faltar vem do cookie.
+    function getTrackingData(m) {
+        function parse(raw) {
+            if (!raw) return {};
+            try {
+                var o = JSON.parse(raw);
+                return (o && typeof o === 'object') ? o : {};
+            } catch (e) {
+                return {};
+            }
+        }
+        var data = parse(getCookie(CONFIG.trackerCookie));
+        var sent = parse(m[CONFIG.fieldSuffix]);
+        Object.keys(sent).forEach(function (k) {
+            if (sent[k] !== null && sent[k] !== undefined && sent[k] !== '') data[k] = sent[k];
+        });
+        var gclAw = data.gclid || getCookie('_gcl_aw') || '';
+        // _gcl_aw vem como GCL.<timestamp>.<gclid>
+        var gclid = /^GCL\.\d+\./.test(gclAw) ? gclAw.split('.').slice(2).join('.') : gclAw;
+        return {
+            client_id: data.client_id || null,
+            session_id: data.session_id || null,
+            fbp: data.fbp || getCookie('_fbp') || null,
+            fbc: data.fbc || getCookie('_fbc') || null,
+            gclid: gclid || null,
+            gcl_aw: gclAw || null,
+            ttclid: data.ttclid || getCookie('_ttclid') || null,
+            ttp: data.ttp || getCookie('_ttp') || null,
+            msclkid: data.msclkid || getCookie('_msclkid') || null,
+            hubspotutk: data.hubspotutk || getCookie('hubspotutk') || null
+        };
+    }
+
     // =================================================================
     // MÓDULO 3: IDENTIFICAÇÃO DO USUÁRIO (Meta + Google)
     // Os dados ficam no cookie spart_ud apenas com hash SHA-256.
@@ -352,25 +388,59 @@
         log('Google user_data aplicado');
     }
 
-    function identifyUser(email, phoneE164, firstName, lastName) {
-        if (!email && !phoneE164) return;
+    // Pixel do Meta já iniciado na página: o fbq não aceita dados após o init,
+    // então os dados são gravados direto na instância do Pixel (API interna,
+    // não documentada). Assim o Lead disparado em seguida já sai identificado.
+    // Se a estrutura interna mudar, nada acontece (sem erro).
+    function applyMetaInPage(u) {
+        var md = toMetaUserData(u);
+        if (!md) return 0;
+        var pixels;
+        try {
+            pixels = window.fbq && window.fbq.instance && window.fbq.instance.pixelsByID;
+        } catch (e) { return 0; }
+        if (!pixels || typeof pixels !== 'object') return 0;
+        var count = 0;
+        Object.keys(pixels).forEach(function (id) {
+            var px = pixels[id];
+            if (!px || typeof px.userData !== 'object' || px.userData === null) return;
+            try {
+                Object.keys(md).forEach(function (k) {
+                    px.userData[k] = md[k];
+                    if (px.alternateUserData && typeof px.alternateUserData === 'object') {
+                        px.alternateUserData[k] = [{ source: 0, value: md[k] }];
+                    }
+                });
+                count++;
+            } catch (e) { /* ignora */ }
+        });
+        if (count) log('Meta user data aplicado no Pixel (' + count + ' pixel(s))');
+        return count;
+    }
+
+    // Mescla os hashes novos com o que já estava salvo (mesmo email).
+    // Retorna null sem consentimento ou sem email/telefone.
+    function mergeUser(h) {
+        if (!h || (!h.em && !h.ph)) return null;
         if (!hasAdsConsent()) {
             log('Sem consentimento ad_user_data: identificação não aplicada');
-            return;
+            return null;
         }
-        buildHashedUser(email, phoneE164, firstName, lastName).then(function (u) {
-            if (!u.em && !u.ph) return;
-            // Mesmo email: mantém campos antigos que não vieram neste envio
-            var stored = readStoredUser();
-            if (stored && stored.em && stored.em === u.em) {
-                Object.keys(stored).forEach(function (k) { if (!u[k]) u[k] = stored[k]; });
-            }
-            u.v = 1;
-            u.ts = Date.now();
-            setRootCookie(CONFIG.userCookie, encodeURIComponent(JSON.stringify(u)), CONFIG.userCookieDays);
-            applyGoogle(u);
-            log('Usuário identificado e salvo', u);
-        });
+        var u = {};
+        Object.keys(h).forEach(function (k) { u[k] = h[k]; });
+        var stored = readStoredUser();
+        if (stored && stored.em && stored.em === u.em) {
+            Object.keys(stored).forEach(function (k) { if (!u[k]) u[k] = stored[k]; });
+        }
+        u.v = 1;
+        u.ts = Date.now();
+        return u;
+    }
+
+    function persistUser(u) {
+        setRootCookie(CONFIG.userCookie, encodeURIComponent(JSON.stringify(u)), CONFIG.userCookieDays);
+        applyGoogle(u);
+        log('Usuário identificado e salvo', u);
     }
 
     var recentCaptures = {};
@@ -399,6 +469,8 @@
         // event_id: prioridade para o valor que foi de fato enviado ao HubSpot
         var eventId = eventIdFromValues(m) || getPageEventId();
 
+        var phoneE164 = normalizePhone(pickPhone(m));
+
         var payload = {
             event: CONFIG.dataLayerEvent,
             event_id: eventId,
@@ -412,26 +484,52 @@
             },
             user_data: {
                 email: email,
-                phone_number: normalizePhone(pickPhone(m)),
+                phone_number: phoneE164,
                 address: {
                     first_name: firstName,
                     last_name: lastName
                 }
-            }
+            },
+            // Preenchido abaixo, após o cálculo dos hashes
+            user_data_sha256: null,
+            tracking: getTrackingData(m)
         };
 
-        window.dataLayer = window.dataLayer || [];
-        window.dataLayer.push(payload);
-        log('dataLayer push', payload);
+        // 1) Identifica o usuário no Pixel e no Google ANTES do push, para que as
+        //    tags disparadas pelo evento já saiam com os dados.
+        // 2) Push no dataLayer (com limite de 500 ms para o hash não atrasar a conversão).
+        // 3) Salva no cookie spart_ud para as próximas páginas.
+        withTimeout(buildHashedUser(email, phoneE164, firstName, lastName), 500)
+            .then(function (h) {
+                h = h || {};
+                // em/fn/ln: iguais para Meta e Google
+                // phone_number: E.164 com + (Google) | phone_number_digits: só dígitos (Meta)
+                payload.user_data_sha256 = {
+                    email: h.em || null,
+                    phone_number: h.phg || null,
+                    phone_number_digits: h.ph || null,
+                    first_name: h.fn || null,
+                    last_name: h.ln || null
+                };
 
-        // Identificação para próximas conversões neste navegador
-        identifyUser(email, payload.user_data.phone_number, firstName, lastName);
+                var u = mergeUser(h);
+                if (u) {
+                    applyMetaInPage(u);
+                    applyGoogle(u);
+                }
 
-        // Novo event_id para um eventual próximo envio na mesma página
-        var api = window.spartMktTracker;
-        if (api && typeof api.rotateEventId === 'function') {
-            try { api.rotateEventId(); } catch (e) { /* ignora */ }
-        }
+                window.dataLayer = window.dataLayer || [];
+                window.dataLayer.push(payload);
+                log('dataLayer push', payload);
+
+                if (u) persistUser(u);
+
+                // Novo event_id para um eventual próximo envio na mesma página
+                var api = window.spartMktTracker;
+                if (api && typeof api.rotateEventId === 'function') {
+                    try { api.rotateEventId(); } catch (e) { /* ignora */ }
+                }
+            });
     }
 
     // ---------- Snapshots (cópia dos valores antes do envio) ----------
