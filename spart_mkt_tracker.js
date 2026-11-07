@@ -1,4 +1,4 @@
-// SPART Mkt Tracker - v2.0
+// SPART Mkt Tracker - v2.1
 function spart_mkt_tracker(domain, measurementId, useJQuery = false) {
 
     var TRACKER_COOKIE = "spart_mkt_tracker";
@@ -19,6 +19,13 @@ function spart_mkt_tracker(domain, measurementId, useJQuery = false) {
         var value = "; " + document.cookie;
         var parts = value.split("; " + name + "=");
         if (parts.length === 2) return parts.pop().split(";").shift();
+    }
+
+    // Avisa outros scripts (ex.: SPART HubSpot Forms Listener) que o cookie mudou
+    function notifyUpdate(reason) {
+        try {
+            window.dispatchEvent(new CustomEvent('spart_mkt_tracker:updated', { detail: { reason: reason } }));
+        } catch (e) { /* navegadores muito antigos */ }
     }
 
     function isFilled(v) {
@@ -103,6 +110,7 @@ function spart_mkt_tracker(domain, measurementId, useJQuery = false) {
         var data = readTrackerCookie();
         data.event_id = eventId;
         set_cookie(TRACKER_COOKIE, JSON.stringify(data), 365, domain);
+        notifyUpdate('event_id');
     }
 
     // API global usada pelo listener de formulários
@@ -259,6 +267,7 @@ function spart_mkt_tracker(domain, measurementId, useJQuery = false) {
         }
 
         set_cookie(TRACKER_COOKIE, JSON.stringify(merged), 365, domain);
+        notifyUpdate('completo');
     });
 
 }
